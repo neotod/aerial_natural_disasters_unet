@@ -7,9 +7,10 @@ import argparse
 
 import torch
 import torch.nn as nn
+import torch.optim.lr_scheduler as lr_scheduler
 import segmentation_models_pytorch as smp
 from evaluate import eval_model
-from src import data_loader
+from src import data_loader, utils
 
 device = ('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -37,7 +38,7 @@ print(json.dumps(args.__dict__, indent=3))
 
 
 if args.loss == 'focal':
-    loss_ = smp.losses.FocalLoss(mode='multiclass', gamma=3/4)
+    loss_ = smp.losses.FocalLoss(mode='multiclass')
 elif args.loss == 'dice':
     loss_ = smp.losses.DiceLoss(mode='multiclass')
 elif args.loss == 'ce':
@@ -54,6 +55,9 @@ if args.continue_epoch != 0:
 
     with open(smp_configs_path, 'r') as f:
         smp_configs = json.load(f)
+
+    if smp_configs['encoder'] != args.encoder:
+        raise Exception(f"model checkpoint's encoder ({smp_configs['encoder']}) is different from the wanted encoder ({args.encoder})")
 
     model = smp.Unet(
         encoder_name=smp_configs['encoder'],
@@ -81,6 +85,8 @@ else:
     )
     
 opt = torch.optim.Adam(model.parameters(), lr=args.lr)
+lr_sched = lr_scheduler.ReduceLROnPlateau(opt, mode='min', patience=2)
+
 # freezing encoder's weights
 for param in model.encoder.parameters():
     param.requires_grad = False
@@ -132,9 +138,16 @@ for ep in range(args.epochs):
         metrics['iou'] /= cnt
         metrics['accuracy'] /= cnt
 
-    print('epoch: {epoch} | train_loss: {loss:.6f} | val_loss: {val_loss:.6f} | iou: {iou} | accuracy: {acc} | time: {time:.3f}s'.format(epoch=ep, loss=loss_i, time=time.time() - t1, val_loss=val_loss, iou=metrics['iou'], acc=metrics['accuracy']))
+        lr_before = utils.get_lr(opt)
+        lr_sched.step(val_loss)
+        lr_after = utils.get_lr(opt)
 
-    #uracy save checkpoint
+        if lr_before != lr_after:
+            print(f'learning rate changed from {lr_before} to {lr_after}')
+
+    print('epoch: {epoch} | train_loss: {loss:.6f} | val_loss: {val_loss:.6f} | iou: {iou:.6f} | accuracy: {acc:.6f} | time: {time:.3f}s'.format(epoch=ep, loss=loss_i, time=time.time() - t1, val_loss=val_loss, iou=metrics['iou'], acc=metrics['accuracy']))
+
+    # model save checkpoint
     checkpoint_dir = os.path.join(args.checkpoints_dir, f'checkpoint_{ep}')
     shutil.rmtree(checkpoint_dir, ignore_errors=True)
     os.mkdir(checkpoint_dir)

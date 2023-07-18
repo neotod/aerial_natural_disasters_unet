@@ -99,8 +99,8 @@ def get_train_data_loaders(root_dir, validation_split, batch_size):
     ]
     train_ds, val_ds = random_split(images_ds,  ds_lengths)
 
-    train_data_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
-    val_data_loader = DataLoader(val_ds, batch_size=len(val_ds), shuffle=False)
+    train_data_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=os.cpu_count())
+    val_data_loader = DataLoader(val_ds, batch_size=len(val_ds), shuffle=False, num_workers=os.cpu_count())
 
     return train_data_loader, val_data_loader
     
