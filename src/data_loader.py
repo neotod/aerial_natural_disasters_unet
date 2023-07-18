@@ -8,6 +8,8 @@ from torch.utils.data import random_split
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
 
+from src import utils
+
 
 class NaturalDisasterDataset(Dataset):
     def __init__(self, root, mean, std, phase='train'):
@@ -19,23 +21,30 @@ class NaturalDisasterDataset(Dataset):
         self.mean, self.std = mean, std
 
     def __getitem__(self, index):
-        leading_zeros = ['0' for _ in range(4 - len(str(index)))]
-        leading_zeros += list(str(index))
-        img_name_num = ''.join(leading_zeros)
+        img_name_num = utils.convert_number_to_4_digits_str(index)
 
-        x_path = os.path.join(self.root, 'images', f'train_{img_name_num}.png')
-        y_path = os.path.join(self.root, 'gt', f'train_{img_name_num}.png')
+        if self.phase in ['train', 'val']:
+            x_path = os.path.join(self.root, 'images', f'train_{img_name_num}.png')
+            y_path = os.path.join(self.root, 'gt', f'train_{img_name_num}.png')
 
-        x = Image.open(x_path)
-        y = Image.open(y_path).convert('L')
+            x = Image.open(x_path)
+            y = Image.open(y_path).convert('L')
 
-        return self.apply_transforms(x, y)
+            return self.apply_transforms(x, y)
+        
+        else:
+            x_path = os.path.join(self.root, f'test_{img_name_num}.png')
+            x = Image.open(x_path)
 
-    
+            return self.apply_transforms(x)
+
     def __len__(self):
-        return len(os.listdir(os.path.join(self.root, 'images')))
+        if self.phase in ['train', 'val']:
+            return len(os.listdir(os.path.join(self.root, 'images')))
+        else:
+            return len(os.listdir(os.path.join(self.root)))
 
-    def apply_transforms(self, x,y):
+    def apply_transforms(self, x,y=None):
         if self.phase == 'train':
             x_transforms = transforms.Compose([
                 transforms.RandomVerticalFlip(p=0.5),
@@ -64,20 +73,24 @@ class NaturalDisasterDataset(Dataset):
         torch.manual_seed(seed)
         x = x_transforms(x)
 
-        if y_transforms:
-            random.seed(seed)
-            torch.manual_seed(seed)
-            y = y_transforms(y)
-            
-        y = torch.Tensor(np.array(y)).squeeze().long()
-        return x, y
+        if self.phase in ['train', 'val']:
+            if y_transforms:
+                random.seed(seed)
+                torch.manual_seed(seed)
+                y = y_transforms(y)
+                
+            y = torch.Tensor(np.array(y)).squeeze().long()
+            return x, y
+        else:
+            return x
 
 
-def get_data_loaders(root_dir, validation_split, batch_size):
+def get_train_data_loaders(root_dir, validation_split, batch_size):
     images_ds = NaturalDisasterDataset(
         root=root_dir, 
         mean=[0.46077183, 0.45584197, 0.41929824], 
-        std=[0.18551224, 0.17078055, 0.17699541]
+        std=[0.18551224, 0.17078055, 0.17699541],
+        phase='train'
     )
 
     ds_lengths = [
@@ -90,3 +103,14 @@ def get_data_loaders(root_dir, validation_split, batch_size):
     val_data_loader = DataLoader(val_ds, batch_size=len(val_ds), shuffle=False)
 
     return train_data_loader, val_data_loader
+    
+
+def get_test_data_loaders(root_dir):
+    images_ds = NaturalDisasterDataset(
+        root=root_dir, 
+        mean=[0.46077183, 0.45584197, 0.41929824], 
+        std=[0.18551224, 0.17078055, 0.17699541],
+        phase='test'
+    )
+    test_data_loader = DataLoader(images_ds, batch_size=len(images_ds), shuffle=False)
+    return test_data_loader

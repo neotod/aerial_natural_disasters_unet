@@ -1,6 +1,6 @@
+import shutil
 import json
 import os
-import sys
 import tqdm
 import time
 import argparse
@@ -23,7 +23,7 @@ def get_args():
     parser.add_argument('--debug', type=bool, default=False)
     parser.add_argument('--checkpoints_dir', type=str, default='./checkpoints/')
     parser.add_argument('--continue_epoch', type=int, default=0, help='continue training the model by loading the saved model at this epoch and not from scratch')
-    parser.add_argument('--loss', type=str, default='focal', help='focal | ce | dice')
+    parser.add_argument('--loss', type=str, default='ce', help='focal | ce | dice')
 
 
     return parser.parse_args()
@@ -34,19 +34,6 @@ args = get_args()
 print('configs:')
 print(json.dumps(args.__dict__, indent=3))
 
-model = smp.Unet(
-    encoder_name=args.encoder,
-    encoder_weights='imagenet',
-    in_channels=3,
-    classes=14
-)
-
-# freezing encoder's weights
-for param in model.encoder.parameters():
-    param.requires_grad = False
-
-
-opt = torch.optim.Adam(model.parameters(), lr=args.lr)
 
 if args.loss == 'focal':
     loss_ = smp.losses.FocalLoss(mode='multiclass', gamma=3/4)
@@ -58,10 +45,22 @@ else:
     raise Exception('Loss is not valid.')
 
 
-train_dl, val_dl = data_loader.get_data_loaders(args.train_dir, args.validation_split, args.batch_size)
+train_dl, val_dl = data_loader.get_train_data_loaders(args.train_dir, args.validation_split, args.batch_size)
 
 if args.continue_epoch != 0:
-    model_path = os.path.join(args.checkpoints_dir, f'checkpoint_{args.continue_epoch}.pth')
+    model_path = os.path.join(args.checkpoints_dir, f'checkpoint_{args.continue_epoch}', 'model.pth')
+    smp_configs_path = os.path.join(args.checkpoints_dir, f'checkpoint_{args.continue_epoch}', 'smp_configs.json')
+
+    with open(smp_configs_path, 'r') as f:
+        smp_configs = json.load(f)
+
+    model = smp.Unet(
+        encoder_name=smp_configs['encoder'],
+        encoder_weights='imagenet',
+        in_channels=3,
+        classes=14
+    )
+
     if os.path.exists(model_path):
         model.load_state_dict(
             torch.load(
@@ -72,7 +71,21 @@ if args.continue_epoch != 0:
     else:
         print(f"can't fine the loaded model checkpoint at epoch {args.continue_epoch} at {model_path}")
 
+else:
+    model = smp.Unet(
+        encoder_name=args.encoder,
+        encoder_weights='imagenet',
+        in_channels=3,
+        classes=14
+    )
+    
+opt = torch.optim.Adam(model.parameters(), lr=args.lr)
+# freezing encoder's weights
+for param in model.encoder.parameters():
+    param.requires_grad = False
+
 model.to(device)
+
 
 for ep in range(args.epochs):
     train_loss = 0
@@ -107,10 +120,22 @@ for ep in range(args.epochs):
             y_pred = model(x)
             y = y.to(device)
 
-            val_loss = loss_(y_pred, y)
+            val_loss = loss_(y_pred, y).item()
 
         val_loss /= len(val_dl)
 
-    print('epoch: {epoch} | train_loss: {loss} | val_loss: {val_loss} | time: {time:.3f}s'.format(epoch=ep, loss=loss_i, time=time.time() - t1, val_loss=val_loss))
+    print('epoch: {epoch} | train_loss: {loss:.6f} | val_loss: {val_loss:.6f} | time: {time:.3f}s'.format(epoch=ep, loss=loss_i, time=time.time() - t1, val_loss=val_loss))
 
-    torch.save(model.state_dict(), os.path.join(args.checkpoints_dir, f'checkpoint_{ep}.pth'))
+    # save checkpoint
+    checkpoint_dir = os.path.join(args.checkpoints_dir, f'checkpoint_{ep}')
+    shutil.rmtree(checkpoint_dir, ignore_errors=True)
+    os.mkdir(checkpoint_dir)
+    torch.save(model.state_dict(), os.path.join(checkpoint_dir, 'model.pth'))
+    with open(os.path.join(checkpoint_dir, 'smp_configs.json'), 'w') as f:
+        json.dump({
+            "encoder": args.encoder
+        }, f)
+
+    print(f'model .pth and smp configs at epoch {ep} saved!')
+    print()
+    
