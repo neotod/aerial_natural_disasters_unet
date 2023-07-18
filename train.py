@@ -8,6 +8,7 @@ import argparse
 import torch
 import torch.nn as nn
 import segmentation_models_pytorch as smp
+from evaluate import eval_model
 from src import data_loader
 
 device = ('cuda' if torch.cuda.is_available() else 'cpu')
@@ -86,7 +87,7 @@ for param in model.encoder.parameters():
 
 model.to(device)
 
-
+cnt = 0
 for ep in range(args.epochs):
     train_loss = 0
     t1 = time.time()
@@ -104,13 +105,15 @@ for ep in range(args.epochs):
         loss_i = loss_(y_pred, y)
 
         loss_i.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         opt.step()
 
         train_loss += loss_i.item()
+        cnt += 1
 
-    train_loss /= len(train_dl)
+    train_loss /= cnt
 
-    val_loss = 0
+    val_loss = cnt =0
     val_dl.dataset.dataset.phase = 'val'
     model.eval()
     with torch.no_grad():
@@ -121,12 +124,17 @@ for ep in range(args.epochs):
             y = y.to(device)
 
             val_loss = loss_(y_pred, y).item()
+            cnt += 1
 
-        val_loss /= len(val_dl)
+            metrics = eval_model(model, x,y)
 
-    print('epoch: {epoch} | train_loss: {loss:.6f} | val_loss: {val_loss:.6f} | time: {time:.3f}s'.format(epoch=ep, loss=loss_i, time=time.time() - t1, val_loss=val_loss))
+        val_loss /= cnt
+        metrics['iou'] /= cnt
+        metrics['accuracy'] /= cnt
 
-    # save checkpoint
+    print('epoch: {epoch} | train_loss: {loss:.6f} | val_loss: {val_loss:.6f} | iou: {iou} | accuracy: {acc} | time: {time:.3f}s'.format(epoch=ep, loss=loss_i, time=time.time() - t1, val_loss=val_loss, iou=metrics['iou'], acc=metrics['accuracy']))
+
+    #uracy save checkpoint
     checkpoint_dir = os.path.join(args.checkpoints_dir, f'checkpoint_{ep}')
     shutil.rmtree(checkpoint_dir, ignore_errors=True)
     os.mkdir(checkpoint_dir)
