@@ -47,9 +47,11 @@ with torch.no_grad():
     preds = []
     for x in test_dl:
         x = x.to(device)
-        preds = model(x)
+        y_pred = model(x)
+        
+        preds.append(y_pred.squeeze().permute(1,2,0).cpu().detach().numpy())
 
-    preds = preds.permute(0, 2,3,1).cpu().detach().numpy()
+    preds = np.array(preds)
 
 for i, mask_pred in enumerate(preds):
     print(f'saving predicted mask #{i}')

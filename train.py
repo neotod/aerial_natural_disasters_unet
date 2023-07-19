@@ -17,8 +17,8 @@ device = ('cuda' if torch.cuda.is_available() else 'cpu')
 def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--train_dir', type=str, default='./data/', help='address to training and validation images directory')
-    parser.add_argument('--lr', '-l', type=float)
-    parser.add_argument('--epochs', '-e', type=int)
+    parser.add_argument('--lr', '-l', type=float, required=True)
+    parser.add_argument('--epochs', '-e', type=int, required=True)
     parser.add_argument('--validation_split', '-v', type=float, default=0.2, help='percent of data for validation')
     parser.add_argument('--batch_size', '-b', type=int)
     parser.add_argument('--encoder', type=str, default='resnet18')
@@ -119,6 +119,10 @@ for ep in range(args.epochs):
 
     train_loss /= cnt
 
+    metrics = {
+        "iou": 0,
+        "accuracy": 0,
+    }
     val_loss = cnt =0
     val_dl.dataset.dataset.phase = 'val'
     model.eval()
@@ -129,10 +133,14 @@ for ep in range(args.epochs):
             y_pred = model(x)
             y = y.to(device)
 
-            val_loss = loss_(y_pred, y).item()
+            val_loss += loss_(y_pred, y).item()
             cnt += 1
 
-            metrics = eval_model(model, x,y)
+            metrics_i = eval_model(model, x,y)
+
+            metrics['iou'] += metrics_i['iou']
+            metrics['accuracy'] += metrics_i['accuracy']
+
 
         val_loss /= cnt
         metrics['iou'] /= cnt
@@ -150,7 +158,7 @@ for ep in range(args.epochs):
     # model save checkpoint
     checkpoint_dir = os.path.join(args.checkpoints_dir, f'checkpoint_{ep}')
     shutil.rmtree(checkpoint_dir, ignore_errors=True)
-    os.mkdir(checkpoint_dir)
+    os.makedirs(checkpoint_dir)
     torch.save(model.state_dict(), os.path.join(checkpoint_dir, 'model.pth'))
     with open(os.path.join(checkpoint_dir, 'smp_configs.json'), 'w') as f:
         json.dump({
