@@ -8,8 +8,6 @@ from torch.utils.data import random_split
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
 
-from src import utils
-
 
 class NaturalDisasterDataset(Dataset):
     def __init__(self, root, mean, std, phase="train"):
@@ -125,5 +123,5 @@ def get_test_data_loaders(root_dir):
         std=[0.18551224, 0.17078055, 0.17699541],
         phase="test",
     )
-    test_data_loader = DataLoader(images_ds, batch_size=1, shuffle=False, num_workers=os.cpu_count())
+    test_data_loader = DataLoader(images_ds, batch_size=1, shuffle=False, num_workers=1)
     return test_data_loader

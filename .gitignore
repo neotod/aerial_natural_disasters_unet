@@ -4,4 +4,4 @@ checkpoints/*
 data/*
 *.ipynb
 todo.md
-
+wandb/
