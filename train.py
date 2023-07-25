@@ -5,6 +5,7 @@ import os
 import tqdm
 import time
 import argparse
+from dotenv import load_dotenv
 
 import torch
 import torch.nn as nn
@@ -12,6 +13,8 @@ import torch.optim.lr_scheduler as lr_scheduler
 import segmentation_models_pytorch as smp
 from evaluate import eval_model
 from src import const, data_loader, utils
+
+load_dotenv()
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -59,7 +62,7 @@ if args.debug:
         id="u_net__{encoder}__{loss}__{lr}__{time:.5f}".format(
             encoder=args.encoder, loss=args.loss, lr=args.lr, time=time.time()
         ),
-        project="lpcv2023",
+        project=os.getenv("WANDB_PROJECT_NAME"),
         resume="allow",
         anonymous="allow",
         config={
@@ -73,11 +76,14 @@ if args.debug:
     )
 
 if args.loss == "focal":
-    loss_ = smp.losses.FocalLoss(mode="multiclass")
+    loss_fn = smp.losses.FocalLoss(mode="multiclass")
 elif args.loss == "dice":
-    loss_ = smp.losses.DiceLoss(mode="multiclass")
+    loss_fn = smp.losses.DiceLoss(mode="multiclass")
 elif args.loss == "ce":
-    loss_ = nn.CrossEntropyLoss()
+    loss_fn = nn.CrossEntropyLoss()
+elif args.loss == "ce+dice":
+    loss_fn1 = nn.CrossEntropyLoss()
+    loss_fn2 = smp.losses.DiceLoss(mode="multiclass")
 else:
     raise Exception("Loss is not valid.")
 
@@ -146,7 +152,12 @@ for ep in range(args.epochs):
         y = y.to(device)
 
         opt.zero_grad()
-        loss_i = loss_(y_pred, y)
+
+        if args.loss in ["ce+dice"]:
+            loss_i = loss_fn1(y_pred, y)
+            loss_i += loss_fn2(y_pred, y)
+        else:
+            loss_i = loss_fn(y_pred, y)
 
         loss_i.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -194,7 +205,13 @@ for ep in range(args.epochs):
             y_pred = model(x)
             y = y.to(device)
 
-            val_loss += loss_(y_pred, y).item()
+            if args.loss in ["ce+dice"]:
+                val_loss_i = loss_fn1(y_pred, y)
+                val_loss_i += loss_fn2(y_pred, y)
+            else:
+                val_loss_i = loss_fn(y_pred, y)
+
+            val_loss += val_loss_i.item()
             cnt += 1
 
             metrics_i = eval_model(model, x, y)
@@ -216,14 +233,13 @@ for ep in range(args.epochs):
     print(
         "epoch: {epoch} | train_loss: {loss:.6f} | val_loss: {val_loss:.6f} | iou: {iou:.6f} | accuracy: {acc:.6f} | time: {time:.3f}s".format(
             epoch=ep,
-            loss=loss_i,
+            loss=train_loss,
             time=time.time() - t1,
             val_loss=val_loss,
             iou=metrics["iou"],
             acc=metrics["accuracy"],
         )
     )
-
 
     if args.debug:
         experiment.log(
