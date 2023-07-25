@@ -4,3 +4,4 @@ Pillow==9.0.0
 tqdm==4.64.1
 segmentation-models-pytorch==0.3.3
 wandb
+python-dotenv==1.0.0
