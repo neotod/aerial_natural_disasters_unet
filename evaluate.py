@@ -7,7 +7,6 @@ device = ('cuda' if torch.cuda.is_available() else 'cpu')
 def eval_model(model, x, y):
     metrics = {
         'iou': 0,
-        'accuracy': 0
     }
 
     x = x.to(device)
@@ -17,7 +16,6 @@ def eval_model(model, x, y):
 
     tp, fp, fn, tn = smp.metrics.get_stats(y_pred, y.long().cpu(), mode='multiclass', num_classes=14)
     metrics['iou'] = smp.metrics.iou_score(tp, fp, fn, tn, reduction='micro')
-    metrics['accuracy'] = smp.metrics.accuracy(tp, fp, fn, tn, reduction='macro')
 
     return metrics
 

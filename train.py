@@ -1,5 +1,3 @@
-import wandb
-import shutil
 import json
 import os
 import tqdm
@@ -12,7 +10,8 @@ import torch.nn as nn
 import torch.optim.lr_scheduler as lr_scheduler
 import segmentation_models_pytorch as smp
 from evaluate import eval_model
-from src import const, data_loader, utils
+from src import data_loader, utils
+from src.wandb_logger import WandBLogger
 
 load_dotenv()
 
@@ -46,102 +45,60 @@ def get_args():
         default=0,
         help="continue training the model by loading the saved model at this epoch and not from scratch",
     )
-    parser.add_argument("--loss", type=str, default="ce", help="focal | ce | dice")
+    parser.add_argument(
+        "--loss_fn", type=str, default="ce", help="focal | ce | dice | ce+dice"
+    )
 
     return parser.parse_args()
 
 
-args = get_args()
-
-print("configs:")
-print(json.dumps(args.__dict__, indent=3))
-
-# (Initialize logging)
-if args.debug:
-    experiment = wandb.init(
-        id="u_net__{encoder}__{loss}__{lr}__{time:.5f}".format(
-            encoder=args.encoder, loss=args.loss, lr=args.lr, time=time.time()
-        ),
-        project=os.getenv("WANDB_PROJECT_NAME"),
-        resume="allow",
-        anonymous="allow",
-        config={
-            "architecture": "u-net",
-            "encoder": args.encoder,
-            "loss": args.loss,
-            "learning_rate": args.lr,
-            "epochs": args.epochs,
-            "batch_size": args.batch_size,
-        },
-    )
-
-if args.loss == "focal":
-    loss_fn = smp.losses.FocalLoss(mode="multiclass")
-elif args.loss == "dice":
-    loss_fn = smp.losses.DiceLoss(mode="multiclass")
-elif args.loss == "ce":
-    loss_fn = nn.CrossEntropyLoss()
-elif args.loss == "ce+dice":
-    loss_fn1 = nn.CrossEntropyLoss()
-    loss_fn2 = smp.losses.DiceLoss(mode="multiclass")
-else:
-    raise Exception("Loss is not valid.")
-
-
-train_dl, val_dl = data_loader.get_train_data_loaders(
-    args.train_dir, args.validation_split, args.batch_size
-)
-
-if args.continue_epoch != 0:
-    model_path = os.path.join(
-        args.checkpoints_dir, f"checkpoint_{args.continue_epoch}", "model.pth"
-    )
-    smp_configs_path = os.path.join(
-        args.checkpoints_dir, f"checkpoint_{args.continue_epoch}", "smp_configs.json"
-    )
-
-    with open(smp_configs_path, "r") as f:
-        smp_configs = json.load(f)
-
-    if smp_configs["encoder"] != args.encoder:
-        raise Exception(
-            f"model checkpoint's encoder ({smp_configs['encoder']}) is different from the wanted encoder ({args.encoder})"
+def get_model(args):
+    if args.continue_epoch != 0:
+        model_path = os.path.join(
+            args.checkpoints_dir, f"checkpoint_{args.continue_epoch}", "model.pth"
+        )
+        smp_configs_path = os.path.join(
+            args.checkpoints_dir,
+            f"checkpoint_{args.continue_epoch}",
+            "smp_configs.json",
         )
 
-    model = smp.Unet(
-        encoder_name=smp_configs["encoder"],
-        encoder_weights="imagenet",
-        in_channels=3,
-        classes=14,
-    )
+        with open(smp_configs_path, "r") as f:
+            smp_configs = json.load(f)
 
-    if os.path.exists(model_path):
-        model.load_state_dict(torch.load(model_path))
-        print(f"model loaded from save checkpoint at epoch {args.continue_epoch}")
+        if smp_configs["encoder"] != args.encoder:
+            raise Exception(
+                f"model checkpoint's encoder ({smp_configs['encoder']}) is different from the wanted encoder ({args.encoder})"
+            )
+
+        model = smp.Unet(
+            encoder_name=smp_configs["encoder"],
+            encoder_weights="imagenet",
+            in_channels=3,
+            classes=14,
+        )
+
+        if os.path.exists(model_path):
+            model.load_state_dict(torch.load(model_path))
+            print(f"model loaded from save checkpoint at epoch {args.continue_epoch}")
+        else:
+            raise Exception(
+                f"can't fine the loaded model checkpoint at epoch {args.continue_epoch} at {model_path}"
+            )
+
     else:
-        print(
-            f"can't fine the loaded model checkpoint at epoch {args.continue_epoch} at {model_path}"
+        model = smp.Unet(
+            encoder_name=args.encoder,
+            encoder_weights="imagenet",
+            in_channels=3,
+            classes=14,
         )
 
-else:
-    model = smp.Unet(
-        encoder_name=args.encoder, encoder_weights="imagenet", in_channels=3, classes=14
-    )
+    return model
 
-opt = torch.optim.Adam(model.parameters(), lr=args.lr)
-lr_sched = lr_scheduler.ReduceLROnPlateau(opt, mode="min", patience=2)
 
-# freezing encoder's weights
-for param in model.encoder.parameters():
-    param.requires_grad = False
-
-model.to(device)
-
-cnt = 0
-for ep in range(args.epochs):
-    train_loss = 0
-    t1 = time.time()
-
+def do_epoch_train(model: nn.Module, train_dl, loss_fn, opt, logger=None):
+    train_loss = count = 0
     model.train()
 
     train_dl.dataset.dataset.phase = "train"
@@ -153,9 +110,9 @@ for ep in range(args.epochs):
 
         opt.zero_grad()
 
-        if args.loss in ["ce+dice"]:
-            loss_i = loss_fn1(y_pred, y)
-            loss_i += loss_fn2(y_pred, y)
+        if args.loss_fn in ["ce+dice"]:
+            loss_i = loss_fn["ce"](y_pred, y)
+            loss_i += loss_fn["dice"](y_pred, y)
         else:
             loss_i = loss_fn(y_pred, y)
 
@@ -164,38 +121,23 @@ for ep in range(args.epochs):
         opt.step()
 
         train_loss += loss_i.item()
-        cnt += 1
+        count += 1
 
-        if args.debug:
-            for x_i, y_i, y_pred_i in zip(x, y, y_pred):
-                experiment.log(
-                    {
-                        "images": wandb.Image(
-                            x_i.cpu().permute(1, 2, 0).numpy(),
-                            masks={
-                                "predications": {
-                                    "mask_data": y_pred_i.argmax(dim=1)
-                                    .float()
-                                    .cpu()
-                                    .numpy(),
-                                    "class_labels": const.CLASS_NAMES,
-                                },
-                                "ground_truth": {
-                                    "mask_data": y_i.float().cpu().numpy(),
-                                    "class_labels": const.CLASS_NAMES,
-                                },
-                            },
-                        ),
-                    }
-                )
+        if logger and os.getenv('WANDB_LOG_IMAGES') in ['true', 'True']:
+            print("loggingg images")
+            logger.log_images(x, y, y_pred)
 
-    train_loss /= cnt
+    train_loss /= count
 
+    return train_loss
+
+
+def do_epoch_val(model: nn.Module, val_dl, loss_fn):
     metrics = {
         "iou": 0,
-        "accuracy": 0,
     }
-    val_loss = cnt = 0
+    val_loss = count = 0
+
     val_dl.dataset.dataset.phase = "val"
     model.eval()
     with torch.no_grad():
@@ -205,23 +147,66 @@ for ep in range(args.epochs):
             y_pred = model(x)
             y = y.to(device)
 
-            if args.loss in ["ce+dice"]:
-                val_loss_i = loss_fn1(y_pred, y)
-                val_loss_i += loss_fn2(y_pred, y)
+            if args.loss_fn in ["ce+dice"]:
+                val_loss_i = loss_fn["ce"](y_pred, y)
+                val_loss_i += loss_fn["ce"](y_pred, y)
             else:
                 val_loss_i = loss_fn(y_pred, y)
 
             val_loss += val_loss_i.item()
-            cnt += 1
+            count += 1
 
             metrics_i = eval_model(model, x, y)
 
             metrics["iou"] += metrics_i["iou"]
-            metrics["accuracy"] += metrics_i["accuracy"]
 
-        val_loss /= cnt
-        metrics["iou"] /= cnt
-        metrics["accuracy"] /= cnt
+        val_loss /= count
+        metrics["iou"] /= count
+
+    return val_loss, metrics
+
+
+def main(args):
+    # (Initialize logging)
+    logger = None
+    if args.debug:
+        logger = WandBLogger(args)
+
+    if args.loss_fn == "focal":
+        loss_fn = smp.losses.FocalLoss(mode="multiclass")
+    elif args.loss_fn == "dice":
+        loss_fn = smp.losses.DiceLoss(mode="multiclass")
+    elif args.loss_fn == "ce":
+        loss_fn = nn.CrossEntropyLoss()
+    elif args.loss_fn == "ce+dice":
+        loss_fn = {
+            "ce": nn.CrossEntropyLoss(),
+            "dice": smp.losses.DiceLoss(mode="multiclass"),
+        }
+    else:
+        raise Exception("Loss is not valid.")
+
+    train_dl, val_dl = data_loader.get_train_data_loaders(
+        args.train_dir, args.validation_split, args.batch_size
+    )
+
+    model = get_model(args)
+
+    opt = torch.optim.Adam(model.parameters(), lr=args.lr)
+    lr_sched = lr_scheduler.ReduceLROnPlateau(opt, mode="min", patience=2)
+
+    # freezing encoder's weights
+    for param in model.encoder.parameters():
+        param.requires_grad = False
+
+    model.to(device)
+
+    epoch = args.continue_epoch + 1 if args.continue_epoch != 0 else 1
+    for _ in range(args.epochs):
+        t1 = time.time()
+
+        train_loss = do_epoch_train(model, train_dl, loss_fn, opt, logger=logger)
+        val_loss, metrics = do_epoch_val(model, val_dl, loss_fn)
 
         lr_before = utils.get_lr(opt)
         lr_sched.step(val_loss)
@@ -230,35 +215,27 @@ for ep in range(args.epochs):
         if lr_before != lr_after:
             print(f"learning rate changed from {lr_before} to {lr_after}")
 
-    print(
-        "epoch: {epoch} | train_loss: {loss:.6f} | val_loss: {val_loss:.6f} | iou: {iou:.6f} | accuracy: {acc:.6f} | time: {time:.3f}s".format(
-            epoch=ep,
-            loss=train_loss,
-            time=time.time() - t1,
-            val_loss=val_loss,
-            iou=metrics["iou"],
-            acc=metrics["accuracy"],
-        )
-    )
-
-    if args.debug:
-        experiment.log(
-            {
-                "train loss": train_loss,
-                "validation loss": val_loss,
-                "iou": metrics["iou"],
-                "epoch": ep,
-                "learning rate": lr_after,
-            }
+        print(
+            "epoch: {epoch} | train_loss: {loss:.6f} | val_loss: {val_loss:.6f} | iou: {iou:.6f} | time: {time:.3f}s".format(
+                epoch=epoch,
+                loss=train_loss,
+                time=time.time() - t1,
+                val_loss=val_loss,
+                iou=metrics["iou"],
+            )
         )
 
-    # model save checkpoint
-    checkpoint_dir = os.path.join(args.checkpoints_dir, f"checkpoint_{ep}")
-    shutil.rmtree(checkpoint_dir, ignore_errors=True)
-    os.makedirs(checkpoint_dir)
-    torch.save(model.state_dict(), os.path.join(checkpoint_dir, "model.pth"))
-    with open(os.path.join(checkpoint_dir, "smp_configs.json"), "w") as f:
-        json.dump({"encoder": args.encoder}, f)
+        if logger:
+            logger.log_epoch(train_loss, val_loss, metrics, epoch, lr_after)
 
-    print(f"model .pth and smp configs at epoch {ep} saved!")
-    print("")
+        utils.save_model_checkpoint(args, epoch, model)
+        epoch += 1
+
+
+if __name__ == "__main__":
+    args = get_args()
+
+    print("configs:")
+    print(json.dumps(args.__dict__, indent=3))
+
+    main(args)
