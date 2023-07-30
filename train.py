@@ -171,14 +171,6 @@ def do_epoch_val(model: nn.Module, val_dl, loss_fn):
     return val_loss, metrics
 
 
-def save_model_checkpoint(args, epoch, model, metrics, lr):
-    if args.save_best_only:
-        utils.save_model_checkpoint_best_only(args, epoch, model, metrics["iou"], lr)
-
-    else:
-        utils.save_model_checkpoint(args, epoch, lr, model)
-
-
 def main(args):
     # (Initialize logging)
     logger = None
@@ -241,7 +233,13 @@ def main(args):
         if logger:
             logger.log_epoch(train_loss, val_loss, metrics, epoch, lr_after)
 
-        save_model_checkpoint(args, epoch, model, metrics, lr_after)
+        if args.save_best_only:
+            utils.save_model_checkpoint_best_only(
+                args, epoch, model, metrics["iou"], lr_after, criteria="max"
+            )
+        else:
+            utils.save_model_checkpoint(args, epoch, lr_after, model, criteria="max")
+
         epoch += 1
 
 
