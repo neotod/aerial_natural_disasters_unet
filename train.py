@@ -40,39 +40,38 @@ def get_args():
     parser.add_argument("--debug", type=bool, default=False)
     parser.add_argument("--checkpoints_dir", type=str, default="./checkpoints/")
     parser.add_argument(
-        "--continue_epoch",
-        type=int,
-        default=0,
-        help="continue training the model by loading the saved model at this epoch and not from scratch",
-    )
-    parser.add_argument(
         "--loss_fn", type=str, default="ce", help="focal | ce | dice | ce+dice"
     )
+    parser.add_argument("--save_best_only", type=bool, default=True)
+    parser.add_argument("--resume_from_best", type=bool, default=False)
 
     return parser.parse_args()
 
 
 def get_model(args):
-    if args.continue_epoch != 0:
-        model_path = os.path.join(
-            args.checkpoints_dir, f"checkpoint_{args.continue_epoch}", "model.pth"
-        )
-        smp_configs_path = os.path.join(
-            args.checkpoints_dir,
-            f"checkpoint_{args.continue_epoch}",
-            "smp_configs.json",
+    if args.resume_from_best:
+        dir = os.path.join(args.checkpoints_dir, f"best_checkpoint")
+
+        model_path = os.path.join(dir, "model.pth")
+        configs_path = os.path.join(
+            dir,
+            "configs.json",
         )
 
-        with open(smp_configs_path, "r") as f:
-            smp_configs = json.load(f)
+        try:
+            with open(configs_path, "r") as f:
+                configs = json.load(f)
 
-        if smp_configs["encoder"] != args.encoder:
-            raise Exception(
-                f"model checkpoint's encoder ({smp_configs['encoder']}) is different from the wanted encoder ({args.encoder})"
-            )
+            if configs["encoder"] != args.encoder:
+                raise Exception(
+                    f"model checkpoint's encoder ({configs['encoder']}) is different from the wanted encoder ({args.encoder})"
+                )
+
+        except:
+            raise Exception(f"can't fine the loaded model configs at {configs_path}")
 
         model = smp.Unet(
-            encoder_name=smp_configs["encoder"],
+            encoder_name=configs["encoder"],
             encoder_weights="imagenet",
             in_channels=3,
             classes=14,
@@ -80,11 +79,13 @@ def get_model(args):
 
         if os.path.exists(model_path):
             model.load_state_dict(torch.load(model_path))
-            print(f"model loaded from save checkpoint at epoch {args.continue_epoch}")
+            print(f"model loaded from save checkpoint at epoch {configs['epoch']}")
         else:
             raise Exception(
-                f"can't fine the loaded model checkpoint at epoch {args.continue_epoch} at {model_path}"
+                f"can't fine the loaded model checkpoint at epoch {configs['epoch']} at {model_path}"
             )
+
+        return model, configs
 
     else:
         model = smp.Unet(
@@ -94,7 +95,12 @@ def get_model(args):
             classes=14,
         )
 
-    return model
+        return model, {
+            "epoch": 1,
+            "metric": None,
+            "lr": args.lr,
+            "encoder": args.encoder,
+        }
 
 
 def do_epoch_train(model: nn.Module, train_dl, loss_fn, opt, logger=None):
@@ -123,8 +129,7 @@ def do_epoch_train(model: nn.Module, train_dl, loss_fn, opt, logger=None):
         train_loss += loss_i.item()
         count += 1
 
-        if logger and os.getenv('WANDB_LOG_IMAGES') in ['true', 'True']:
-            print("loggingg images")
+        if logger and os.getenv("WANDB_LOG_IMAGES") in ["true", "True"]:
             logger.log_images(x, y, y_pred)
 
     train_loss /= count
@@ -166,6 +171,14 @@ def do_epoch_val(model: nn.Module, val_dl, loss_fn):
     return val_loss, metrics
 
 
+def save_model_checkpoint(args, epoch, model, metrics, lr):
+    if args.save_best_only:
+        utils.save_model_checkpoint_best_only(args, epoch, model, metrics["iou"], lr)
+
+    else:
+        utils.save_model_checkpoint(args, epoch, lr, model)
+
+
 def main(args):
     # (Initialize logging)
     logger = None
@@ -190,9 +203,9 @@ def main(args):
         args.train_dir, args.validation_split, args.batch_size
     )
 
-    model = get_model(args)
+    model, configs = get_model(args)
 
-    opt = torch.optim.Adam(model.parameters(), lr=args.lr)
+    opt = torch.optim.Adam(model.parameters(), lr=configs["lr"])
     lr_sched = lr_scheduler.ReduceLROnPlateau(opt, mode="min", patience=2)
 
     # freezing encoder's weights
@@ -201,7 +214,7 @@ def main(args):
 
     model.to(device)
 
-    epoch = args.continue_epoch + 1 if args.continue_epoch != 0 else 1
+    epoch = configs["epoch"]  # it's either saved epoch or 1 (fresh model)
     for _ in range(args.epochs):
         t1 = time.time()
 
@@ -228,7 +241,7 @@ def main(args):
         if logger:
             logger.log_epoch(train_loss, val_loss, metrics, epoch, lr_after)
 
-        utils.save_model_checkpoint(args, epoch, model)
+        save_model_checkpoint(args, epoch, model, metrics, lr_after)
         epoch += 1
 
 

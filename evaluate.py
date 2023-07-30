@@ -15,7 +15,7 @@ def eval_model(model, x, y):
     y_pred = torch.argmax(y_pred.permute(0, 2,3,1).cpu(), dim=3)
 
     tp, fp, fn, tn = smp.metrics.get_stats(y_pred, y.long().cpu(), mode='multiclass', num_classes=14)
-    metrics['iou'] = smp.metrics.iou_score(tp, fp, fn, tn, reduction='micro')
+    metrics['iou'] = smp.metrics.iou_score(tp, fp, fn, tn, reduction='micro').item()
 
     return metrics
 
