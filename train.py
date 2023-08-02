@@ -26,7 +26,10 @@ def get_args():
         default="./data/",
         help="address to training and validation images directory",
     )
-    parser.add_argument("--lr", "-l", type=float, required=True)
+    parser.add_argument("--lr", "-l", type=float, default=0.1)
+    parser.add_argument("--base_lr", type=float, default=5e-3)
+    parser.add_argument("--max_lr", type=float, default=25e-3)
+    parser.add_argument("--lr_sched", type=str, default="reduce_on_plateau")
     parser.add_argument("--epochs", "-e", type=int, required=True)
     parser.add_argument(
         "--validation_split",
@@ -103,11 +106,12 @@ def get_model(args):
         }
 
 
-def do_epoch_train(model: nn.Module, train_dl, loss_fn, opt, logger=None):
+def do_epoch_train(model: nn.Module, train_dl, loss_fn, opt, lr_sched, logger=None):
     train_loss = count = 0
     model.train()
 
     train_dl.dataset.dataset.phase = "train"
+    lr_before = utils.get_lr(opt)
     for x, y in tqdm.tqdm(train_dl):
         x = x.to(device)
 
@@ -132,9 +136,13 @@ def do_epoch_train(model: nn.Module, train_dl, loss_fn, opt, logger=None):
         if logger and os.getenv("WANDB_LOG_IMAGES") in ["true", "True"]:
             logger.log_images(x, y, y_pred)
 
-    train_loss /= count
+        if args.lr_sched == "cyclic":
+            lr_sched.step()
 
-    return train_loss
+    train_loss /= count
+    lr_after = utils.get_lr(opt)
+
+    return train_loss, lr_before, lr_after
 
 
 def do_epoch_val(model: nn.Module, val_dl, loss_fn):
@@ -198,7 +206,22 @@ def main(args):
     model, configs = get_model(args)
 
     opt = torch.optim.Adam(model.parameters(), lr=configs["lr"])
-    lr_sched = lr_scheduler.ReduceLROnPlateau(opt, mode="min", patience=2)
+
+    if args.lr_sched == "reduce_on_plateau":
+        lr_sched = lr_scheduler.ReduceLROnPlateau(opt, mode="min", patience=2)
+    elif args.lr_sched == "cyclic":
+        lr_sched = lr_scheduler.CyclicLR(
+            opt,
+            args.base_lr,
+            args.max_lr,
+            step_size_up=len(train_dl) * 5,
+            mode="triangular",
+            cycle_momentum=False,
+        )
+    else:
+        raise Exception(
+            'lr_sched is not valid. It should be either "reduce_on_plateau" or "cyclic"'
+        )
 
     # freezing encoder's weights
     for param in model.encoder.parameters():
@@ -210,18 +233,28 @@ def main(args):
     for _ in range(args.epochs):
         t1 = time.time()
 
-        train_loss = do_epoch_train(model, train_dl, loss_fn, opt, logger=logger)
+        train_loss, lr_before, lr_after = do_epoch_train(
+            model, train_dl, loss_fn, opt, lr_sched, logger=logger
+        )
         val_loss, metrics = do_epoch_val(model, val_dl, loss_fn)
 
-        lr_before = utils.get_lr(opt)
-        lr_sched.step(val_loss)
-        lr_after = utils.get_lr(opt)
+        if args.lr_sched == "reduce_on_plateau":
+            lr_before = utils.get_lr(opt)
+            lr_sched.step(val_loss)
+            lr_after = utils.get_lr(opt)
 
         if lr_before != lr_after:
             print(f"learning rate changed from {lr_before} to {lr_after}")
 
+        if args.save_best_only:
+            utils.save_model_checkpoint_best_only(
+                args, epoch, model, metrics["iou"], lr_after, criteria="max"
+            )
+        else:
+            utils.save_model_checkpoint(args, epoch, lr_after, model, criteria="max")
+
         print(
-            "epoch: {epoch} | train_loss: {loss:.6f} | val_loss: {val_loss:.6f} | iou: {iou:.6f} | time: {time:.3f}s".format(
+            "epoch: {epoch} | train_loss: {loss:.6f} | val_loss: {val_loss:.6f} | iou: {iou:.6f} | time: {time:.3f}s\n".format(
                 epoch=epoch,
                 loss=train_loss,
                 time=time.time() - t1,
@@ -232,13 +265,6 @@ def main(args):
 
         if logger:
             logger.log_epoch(train_loss, val_loss, metrics, epoch, lr_after)
-
-        if args.save_best_only:
-            utils.save_model_checkpoint_best_only(
-                args, epoch, model, metrics["iou"], lr_after, criteria="max"
-            )
-        else:
-            utils.save_model_checkpoint(args, epoch, lr_after, model, criteria="max")
 
         epoch += 1
 
