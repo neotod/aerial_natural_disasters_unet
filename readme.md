@@ -8,6 +8,35 @@
 
 ----
 
+## How to use?
+
+#### Training:
+`python train.py`
+
+**arguements:**
+* `--train_dir` - address to training and validation images directory.
+* `--lr` / `-l` - Learning rate.
+* `--base_lr` - Base learning rate.
+* `--max_lr` - Maximum learning rate.
+* `--lr_sched` - Learning rate schedular. Valid values: `reduce_on_plateau` and `cyclic` for CyclicLR.
+* `--epochs` / `-e` - Number of training epochs.
+* `--validation_split` / `-v`, - Validation split ratio during training.
+* `--batch_size` / `-b`, - Batch size for training dataset.
+* `--encoder` - Encoder's backbone architecture. Default is `resnet18`.
+* `--debug` - Show debug info (logs and stuff).
+* `--checkpoints_dir` - Checkpoints directory.
+* `--loss_fn` - Loss function.
+* `--save_best_only` - 
+* `--resume_from_best` - 
+
+
+#### Testing / Evaluating:
+`python evaluate.py`
+
+#### Predicting:
+`python predict.py`
+
+----
 ### Dataset
 - Dataset was **from the LPCV2023 challenge <a href="https://lpcv.ai/2023LPCVC/program">Link</a>**.
 - The dataset includes images of natural disasters taken from drone.
@@ -33,29 +62,29 @@ We can conclude that background class (black color in the masks), is the dominan
 - EDA codes are at `notebooks/eda.ipynb`.
 
 ----
-### My solution
+### Model
 
 ##### Architecture:
-- I chosen **CNN-based U-Net** as my main model's architecture for the task. Because it's very suitable for almost all of the segmentation tasks and it's proven its strengths.
-- I mostly used already implemented u-net models in pytorch from [Segmentation Models package](https://github.com/qubvel/segmentation_models.pytorch).
+- I chosen **CNN-based U-Net** as my main model's architecture for the task. Because it's very suitable for almost all of the segmentation tasks and it's already proven its strengths.
+- I used the already implemented u-net models in pytorch from [Segmentation Models package](https://github.com/qubvel/segmentation_models.pytorch).
 
 ##### Training:
-- For training, I used Colab as the training platform, 
-- Training code is at `train.py`.
-
-[] using different losses
-[] Dealing with class imballance:
-[] using cyclic lr
-[] using WANDB
-[]
+- Training codes are at `train.py` and `notebooks/train.ipynb`.
+- Different loss functions `(focal, ce, dice, ce+dice)` can be used using the argument `--loss_fn`.
+- Other training settings: `CyclicLR` schedular, `WANDB` for logging, `Adam` as optimizer.
 
 
 ##### Evaulation and Result:
 
 - In the end using my model, I was able to achieve IOU of something about 0.3.
-[] add picutres
-[] tell more
+- Some of the predictions:
+<img src="./imgs/predictions.png" width="400px"/>
+
+from left to right: Picture, GT mask, predicted mask.
+
+* This shows that the model performs very well on some of the classes. But there's still room for improvement.
 
 
 
-- Unfortunately, because of lack of resources provided by IPM (GPU for exprimentation and training), I chosen to let this project go 😢.
+</br></br>
+- In the end, unfortunately, because of lack of resources provided by IPM (GPU for exprimentation and training), I chosen to let this project go 😠.
